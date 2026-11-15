@@ -18,7 +18,7 @@ class RoomManager {
     return pin;
   }
 
-  createRoom(quizTitle, questions) {
+  createRoom(quizTitle, questions, quizId = null, userId = null) {
     if (!questions || !Array.isArray(questions) || questions.length === 0) {
       throw new Error('At least one question is required to create a room.');
     }
@@ -29,6 +29,8 @@ class RoomManager {
     const room = {
       pin,
       hostToken,
+      quizId,
+      userId,
       quizTitle: quizTitle || 'Live Interactive Quiz',
       questions,
       state: 'LOBBY', // 'LOBBY' | 'QUESTION_ACTIVE' | 'QUESTION_ENDED' | 'FINAL_PODIUM'
@@ -41,7 +43,7 @@ class RoomManager {
     };
 
     this.rooms.set(pin, room);
-    return { pin, hostToken, quizTitle: room.quizTitle, totalQuestions: questions.length };
+    return { pin, hostToken, quizTitle: room.quizTitle, totalQuestions: questions.length, quizId };
   }
 
   getRoom(pin) {
@@ -134,7 +136,7 @@ class RoomManager {
     const nextIndex = room.currentQuestionIndex + 1;
     if (nextIndex >= room.questions.length) {
       room.state = 'FINAL_PODIUM';
-      return { isFinished: true, podium: this.getTopContestants(pin, 10) };
+      return { isFinished: true, podium: this.getTopContestants(pin, 100) };
     }
 
     room.currentQuestionIndex = nextIndex;
@@ -183,14 +185,27 @@ class RoomManager {
     const currentQ = room.questions[room.currentQuestionIndex];
     const isCorrect = optIndex === currentQ.correctOptionIndex;
 
+    // Count how many correct answers have arrived so far for this question (arrival order)
+    let correctOrder = 1;
+    if (isCorrect) {
+      for (const ans of room.currentAnswers.values()) {
+        if (ans.isCorrect) {
+          correctOrder++;
+        }
+      }
+    }
+
+    const maxPoints = currentQ.pointsPossible || 10;
     const pointsAwarded = calculateScore(
       isCorrect,
       responseTimeMs,
       currentQ.timeLimitSeconds,
-      currentQ.pointsPossible
+      maxPoints,
+      correctOrder
     );
 
-    // Update player stats
+    // Track previous question score and accumulate new total score
+    const previousScore = player.score;
     player.score += pointsAwarded;
     if (isCorrect) {
       player.streak += 1;
@@ -204,7 +219,10 @@ class RoomManager {
       selectedOption: optIndex,
       responseTimeMs,
       pointsAwarded,
-      isCorrect
+      previousScore,
+      totalScore: player.score,
+      isCorrect,
+      correctOrder: isCorrect ? correctOrder : null
     };
 
     player.answers.push(answerRecord);
@@ -218,7 +236,10 @@ class RoomManager {
     return {
       alreadyAnswered: false,
       pointsAwarded,
+      previousScore,
+      totalScore: player.score,
       isCorrect,
+      correctOrder: isCorrect ? correctOrder : null,
       answeredCount,
       totalPlayers,
       allAnswered
@@ -244,28 +265,60 @@ class RoomManager {
       }
     }
 
-    // Sort all players by cumulative score descending to compute current ranks
-    const sortedPlayers = Array.from(room.players.values()).sort((a, b) => b.score - a.score);
+    // Sort all players by cumulative score descending.
+    // Tie-breaker: total response time across all questions ascending (faster cumulative response earns higher rank).
+    const sortedPlayers = Array.from(room.players.values()).sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      const aTotalTime = a.answers.reduce((acc, ans) => acc + (ans.responseTimeMs || 0), 0);
+      const bTotalTime = b.answers.reduce((acc, ans) => acc + (ans.responseTimeMs || 0), 0);
+      return aTotalTime - bTotalTime;
+    });
 
     // Build per-player results map (for both answered and non-answered players)
     const playerResults = {};
-    for (const player of sortedPlayers) {
+    for (let i = 0; i < sortedPlayers.length; i++) {
+      const player = sortedPlayers[i];
       const ans = room.currentAnswers.get(player.id);
-      const rank = sortedPlayers.findIndex(p => p.id === player.id) + 1;
+      const rank = i + 1;
+      const previousScore = ans ? ans.previousScore : player.score;
+      const pointsAwarded = ans ? ans.pointsAwarded : 0;
+
       playerResults[player.id] = {
         answered: Boolean(ans),
         selectedOption: ans ? ans.selectedOption : null,
         isCorrect: ans ? ans.isCorrect : false,
-        pointsAwarded: ans ? ans.pointsAwarded : 0,
+        pointsAwarded,
+        previousScore,
         score: player.score,
         streak: player.streak,
         rank,
-        correctOptionIndex: currentQ.correctOptionIndex
+        totalParticipants: sortedPlayers.length,
+        correctOptionIndex: currentQ.correctOptionIndex,
+        correctOrder: ans?.correctOrder || null,
+        responseTimeMs: ans?.responseTimeMs || 0
       };
     }
 
-    // Get current top 5 leaderboard
-    const top5 = this.getTopContestants(pin, 5);
+    // Full ranked leaderboard of all participants after this question
+    const leaderboard = sortedPlayers.map((p, idx) => {
+      const lastAns = p.answers.find(a => a.questionIndex === room.currentQuestionIndex);
+      const lastPointsAwarded = lastAns ? lastAns.pointsAwarded : 0;
+      const previousScore = lastAns ? lastAns.previousScore : (p.score - lastPointsAwarded);
+      return {
+        rank: idx + 1,
+        id: p.id,
+        nickname: p.nickname,
+        score: p.score,
+        previousScore,
+        lastPointsAwarded,
+        lastAnswerCorrect: lastAns ? lastAns.isCorrect : false,
+        streak: p.streak,
+        responseTimeMs: lastAns ? lastAns.responseTimeMs : null,
+        correctOrder: lastAns ? lastAns.correctOrder : null
+      };
+    });
 
     return {
       questionIndex: room.currentQuestionIndex,
@@ -274,32 +327,73 @@ class RoomManager {
       distribution,
       totalAnswers: room.currentAnswers.size,
       totalPlayers: room.players.size,
-      top5Leaderboard: top5,
+      leaderboard,
+      top5Leaderboard: leaderboard.slice(0, 5), // Backwards compatibility
       playerResults
     };
   }
 
-  getTopContestants(pin, limit = 10) {
+  getTopContestants(pin, limit = 100) {
     const room = this.getRoom(pin);
     if (!room) return [];
 
-    const sorted = Array.from(room.players.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
+    const sorted = Array.from(room.players.values()).sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      const aTotalTime = a.answers.reduce((acc, ans) => acc + (ans.responseTimeMs || 0), 0);
+      const bTotalTime = b.answers.reduce((acc, ans) => acc + (ans.responseTimeMs || 0), 0);
+      return aTotalTime - bTotalTime;
+    });
 
-    return sorted.map((p, idx) => {
-      // Find points earned in the latest question
+    const sliced = limit ? sorted.slice(0, limit) : sorted;
+
+    return sliced.map((p, idx) => {
       const lastAns = p.answers.find(a => a.questionIndex === room.currentQuestionIndex);
+      const lastPointsAwarded = lastAns ? lastAns.pointsAwarded : 0;
+      const previousScore = lastAns ? lastAns.previousScore : (p.score - lastPointsAwarded);
       return {
         rank: idx + 1,
         id: p.id,
         nickname: p.nickname,
         score: p.score,
+        previousScore,
+        lastPointsAwarded,
+        lastAnswerCorrect: lastAns ? lastAns.isCorrect : false,
         streak: p.streak,
-        lastPointsAwarded: lastAns ? lastAns.pointsAwarded : 0,
-        lastAnswerCorrect: lastAns ? lastAns.isCorrect : false
+        responseTimeMs: lastAns ? lastAns.responseTimeMs : null,
+        correctOrder: lastAns ? lastAns.correctOrder : null
       };
     });
+  }
+
+  quitGame(pin, hostToken) {
+    if (!this.validateHost(pin, hostToken)) {
+      throw new Error('Unauthorized: Host permissions required.');
+    }
+    const room = this.getRoom(pin);
+    if (!room) throw new Error('Room not found.');
+
+    room.state = 'FINAL_PODIUM';
+    room.lastActivityAt = Date.now();
+    const podium = this.getTopContestants(pin, 100);
+    return { isFinished: true, podium };
+  }
+
+  updateRoomTimer(pin, hostToken, timeLimitSeconds) {
+    if (!this.validateHost(pin, hostToken)) {
+      throw new Error('Unauthorized: Host permissions required.');
+    }
+    const room = this.getRoom(pin);
+    if (!room) throw new Error('Room not found.');
+
+    const seconds = Math.max(5, Math.min(300, parseInt(timeLimitSeconds, 10) || 20));
+    room.questions.forEach(q => {
+      q.timeLimitSeconds = seconds;
+    });
+    room.lastActivityAt = Date.now();
+
+    return { success: true, timeLimitSeconds: seconds };
   }
 
   // Auto cleanup rooms older than 4 hours

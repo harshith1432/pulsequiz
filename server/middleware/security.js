@@ -5,22 +5,31 @@ const cors = require('cors');
 const pinAttempts = new Map(); // ip -> { count, firstAttempt }
 
 function pinRateLimiter(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  // Support Cloudflare CF-Connecting-IP or X-Forwarded-For behind load balancer
+  const clientIp = (
+    req.headers['cf-connecting-ip'] ||
+    req.headers['x-forwarded-for']?.split(',')[0] ||
+    req.ip ||
+    req.connection.remoteAddress ||
+    'unknown'
+  ).trim();
+
   const now = Date.now();
   const windowMs = 60 * 1000; // 1 minute
-  const maxAttempts = 10;
+  // Allow high concurrency for schools, conference Wi-Fi, and public live events
+  const maxAttempts = 2000;
 
-  let record = pinAttempts.get(ip);
+  let record = pinAttempts.get(clientIp);
   if (!record || now - record.firstAttempt > windowMs) {
     record = { count: 1, firstAttempt: now };
-    pinAttempts.set(ip, record);
+    pinAttempts.set(clientIp, record);
     return next();
   }
 
   record.count++;
   if (record.count > maxAttempts) {
     return res.status(429).json({
-      error: 'Too many PIN verification attempts. Please wait a minute and try again.'
+      error: 'Rate limit exceeded on room verification. Please try again in a few moments.'
     });
   }
 

@@ -200,7 +200,7 @@ function parseExcelBuffer(buffer) {
       options,
       correctOptionIndex: correctIndex,
       timeLimitSeconds: timeLimit,
-      pointsPossible: 1000,
+      pointsPossible: 10,
       explanation
     });
   }

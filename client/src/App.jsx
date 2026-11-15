@@ -10,32 +10,59 @@ import PlayerJoin from './components/player/PlayerJoin';
 import PlayerLobby from './components/player/PlayerLobby';
 import AnswerPad from './components/player/AnswerPad';
 import PlayerFeedback from './components/player/PlayerFeedback';
+import HostAuthModal from './components/host/HostAuthModal';
+import { getTheme } from './utils/themes';
 
 export default function App() {
   const { socket, connected, localIp } = useSocket();
 
-  // Mode: 'HOST' or 'PLAYER'
+  // Host User State hydrated from localStorage
+  const [hostUser, setHostUser] = useState(() => {
+    try {
+      const stored = localStorage.getItem('pulsequiz_user');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
+  // Mode: Default is strictly 'PLAYER' (Enter PIN & join room screen) for all visitors
   const [mode, setMode] = useState(() => {
     const path = window.location.pathname;
-    const params = new URLSearchParams(window.location.search);
-    if (path.startsWith('/play') || params.has('pin')) {
-      return 'PLAYER';
+    const token = localStorage.getItem('pulsequiz_token');
+    if (path.startsWith('/host') && token) {
+      return 'HOST';
     }
-    return 'HOST';
+    return 'PLAYER';
   });
 
-  // Effective Public URL for Cloudflare Tunnel or local LAN
+  // 10 Aesthetic Creamy Themes: Default 'cream_espresso'
+  const [activeThemeId, setActiveThemeId] = useState('cream_espresso');
+  const currentTheme = getTheme(activeThemeId);
+
+  // Synchronize entire document body background and text with current theme
+  useEffect(() => {
+    document.body.style.backgroundColor = currentTheme.bgHex;
+    document.body.style.color = currentTheme.textPrimaryHex;
+  }, [currentTheme]);
+
+  // Effective Public URL for Cloudflare Tunnel (fallback to origin if already on tunnel)
   const [publicUrl, setPublicUrl] = useState(() => {
-    return window.location.origin;
+    if (window.location.origin.includes('cloudflare') || window.location.origin.includes('trycloudflare.com')) {
+      return window.location.origin;
+    }
+    return 'https://appreciation-computed-dame-lucas.trycloudflare.com';
   });
 
-  // Fetch configured public URL from backend
+  // Fetch configured public URL from backend on mount
   useEffect(() => {
     fetch('/api/config')
       .then(r => r.json())
       .then(data => {
         if (data.publicUrl) {
-          setPublicUrl(data.publicUrl);
+          setPublicUrl(data.publicUrl.trim().replace(/\/+$/, ''));
         }
       })
       .catch(() => {});
@@ -55,6 +82,13 @@ export default function App() {
       }
     } catch (err) {
       console.error('Error updating public url:', err);
+    }
+  };
+
+  const handleSelectTheme = (newThemeId) => {
+    setActiveThemeId(newThemeId);
+    if (socket && room) {
+      socket.emit('room:set_theme', { pin: room.pin, themeId: newThemeId });
     }
   };
 
@@ -92,6 +126,13 @@ export default function App() {
       setAnsweredCount(data.answeredCount);
     });
 
+    // Theme sync across all connected clients
+    socket.on('room:theme_updated', (data) => {
+      if (data.themeId) {
+        setActiveThemeId(data.themeId);
+      }
+    });
+
     // Both: Active question broadcasted
     socket.on('question:active', (qData) => {
       setAnsweredCount(0);
@@ -107,10 +148,10 @@ export default function App() {
       }
     });
 
-    // Both: Round ended & answer revealed
+    // Both: Round ended & answer revealed on timeout
     socket.on('round:ended', (resData) => {
       setRoundResult(resData);
-      setLeaderboard(resData.top5Leaderboard || []);
+      setLeaderboard(resData.leaderboard || resData.top5Leaderboard || []);
 
       if (mode === 'PLAYER') {
         const myResult = (resData.playerResults && socket.id) ? resData.playerResults[socket.id] : null;
@@ -118,12 +159,15 @@ export default function App() {
           setPlayerInfo(prev => ({
             ...prev,
             score: myResult.score,
+            previousScore: myResult.previousScore,
             streak: myResult.streak,
             lastPointsAwarded: myResult.pointsAwarded,
             lastAnswerCorrect: myResult.isCorrect,
             answered: myResult.answered,
             selectedOption: myResult.selectedOption,
-            rank: myResult.rank
+            rank: myResult.rank,
+            totalParticipants: myResult.totalParticipants,
+            correctOrder: myResult.correctOrder
           }));
         } else {
           setPlayerInfo(prev => ({
@@ -151,11 +195,87 @@ export default function App() {
     return () => {
       socket.off('room:players_updated');
       socket.off('answer:count_update');
+      socket.off('room:theme_updated');
       socket.off('question:active');
       socket.off('round:ended');
       socket.off('game:finished');
     };
   }, [socket, mode]);
+
+  // ---------------- FULLSCREEN & KEYBOARD CONTROLS ----------------
+  const enterFullscreen = () => {
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    } catch {}
+  };
+
+  const exitFullscreen = () => {
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch {}
+  };
+
+  // Auto-enable fullscreen when running quiz
+  useEffect(() => {
+    if (mode === 'HOST' && ['ARENA', 'ROUND_LEADERBOARD'].includes(hostState)) {
+      enterFullscreen();
+    }
+  }, [mode, hostState]);
+
+  // Keyboard navigation & Escape key early finish
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Do not hijack typing in inputs or textareas
+      if (['INPUT', 'TEXTAREA'].includes(e.target?.tagName)) return;
+
+      // Escape key: Close quiz immediately and declare winners based on current rankings
+      if (e.key === 'Escape') {
+        if (mode === 'HOST' && ['ARENA', 'ROUND_LEADERBOARD', 'LOBBY'].includes(hostState) && socket && room) {
+          e.preventDefault();
+          exitFullscreen();
+          socket.emit('host:quit_game', { pin: room.pin, hostToken: room.hostToken }, (res) => {
+            if (res && res.success) {
+              setPodium(res.podium || []);
+              setHostState('FINAL_PODIUM');
+            }
+          });
+        }
+        return;
+      }
+
+      // Arrow and Enter controls: Move to next question / reveal answer
+      if (['ArrowRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'Enter'].includes(e.key)) {
+        if (mode === 'HOST') {
+          if (hostState === 'LOBBY') {
+            e.preventDefault();
+            enterFullscreen();
+            handleStartGame();
+          } else if (hostState === 'ARENA') {
+            e.preventDefault();
+            enterFullscreen();
+            if (!roundResult) {
+              // Reveal answer early if timer is ticking
+              handleRevealAnswer();
+            } else {
+              // Advance to leaderboard or next question
+              handleNextQuestion();
+            }
+          } else if (hostState === 'ROUND_LEADERBOARD') {
+            e.preventDefault();
+            enterFullscreen();
+            handleNextQuestion();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mode, hostState, socket, room, roundResult]);
 
   // ---------------- HOST HANDLERS ----------------
   const handleRoomCreated = (roomData) => {
@@ -175,6 +295,7 @@ export default function App() {
 
   const handleStartGame = () => {
     if (!socket || !room) return;
+    enterFullscreen();
     socket.emit('host:next_question', { pin: room.pin, hostToken: room.hostToken });
   };
 
@@ -189,7 +310,28 @@ export default function App() {
 
   const handleNextQuestion = () => {
     if (!socket || !room) return;
+    enterFullscreen();
     socket.emit('host:next_question', { pin: room.pin, hostToken: room.hostToken });
+  };
+
+  const handleQuitGame = () => {
+    if (!socket || !room) return;
+    exitFullscreen();
+    socket.emit('host:quit_game', { pin: room.pin, hostToken: room.hostToken }, (res) => {
+      if (res && res.success) {
+        setPodium(res.podium || []);
+        setHostState('FINAL_PODIUM');
+      }
+    });
+  };
+
+  const handleUpdateTimer = (timeLimitSeconds) => {
+    if (!socket || !room) return;
+    socket.emit('host:update_timer', {
+      pin: room.pin,
+      hostToken: room.hostToken,
+      timeLimitSeconds
+    });
   };
 
   const handleHostReset = () => {
@@ -200,6 +342,39 @@ export default function App() {
     setRoundResult(null);
     setLeaderboard([]);
     setPodium([]);
+  };
+
+  const handlePlayNextRound = async () => {
+    if (!room?.quizId) {
+      handleHostReset();
+      return;
+    }
+    const token = localStorage.getItem('pulsequiz_token');
+    try {
+      const res = await fetch('/api/rooms', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          quizId: room.quizId,
+          pickFresh: true,
+          sampleCount: room.totalQuestions || 20
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to create next round room');
+      setRoom(data);
+      setHostState('LOBBY');
+      setPlayers([]);
+      setCurrentQuestion(null);
+      setRoundResult(null);
+      setLeaderboard([]);
+      setPodium([]);
+    } catch (err) {
+      alert('Failed to launch next round: ' + err.message);
+    }
   };
 
   // ---------------- PLAYER HANDLERS ----------------
@@ -244,44 +419,79 @@ export default function App() {
     });
   };
 
-  // Helper to switch mode between Host and Mobile Player for quick testing
+  // ---------------- AUTH HANDLERS ----------------
+  const handleAuthSuccess = (user) => {
+    setHostUser(user);
+    setMode('HOST');
+    window.history.replaceState({}, '', '/host');
+  };
+
+  const handleHostLogout = () => {
+    localStorage.removeItem('pulsequiz_token');
+    localStorage.removeItem('pulsequiz_user');
+    setHostUser(null);
+    setMode('PLAYER');
+    window.history.replaceState({}, '', '/');
+  };
+
+  const handleGoToHost = () => {
+    const token = localStorage.getItem('pulsequiz_token');
+    if (token && hostUser) {
+      setMode('HOST');
+      window.history.replaceState({}, '', '/host');
+    } else {
+      setIsAuthModalOpen(true);
+    }
+  };
+
+  // Helper to switch mode between Host and Mobile Player
   const toggleMode = () => {
     const newMode = mode === 'HOST' ? 'PLAYER' : 'HOST';
+    if (newMode === 'HOST' && !localStorage.getItem('pulsequiz_token')) {
+      setIsAuthModalOpen(true);
+      return;
+    }
     setMode(newMode);
     if (newMode === 'PLAYER') {
-      window.history.replaceState({}, '', '/play');
-    } else {
       window.history.replaceState({}, '', '/');
+    } else {
+      window.history.replaceState({}, '', '/host');
     }
   };
 
   // ---------------- RENDER ----------------
 
-  // Player Mode
+  // Player Mode (Default landing view for all visitors)
   if (mode === 'PLAYER') {
     return (
-      <div className="h-full min-h-screen bg-[#0B0F19] text-white">
-        {/* Floating Switcher for testing */}
-        <div className="fixed top-2 right-2 z-50 opacity-40 hover:opacity-100 transition">
-          <button
-            onClick={toggleMode}
-            className="text-[10px] bg-slate-800 text-slate-300 px-2.5 py-1 rounded-md border border-slate-700"
-          >
-            Switch to Host View
-          </button>
-        </div>
-
+      <div
+        className="h-full min-h-screen transition-colors duration-300"
+        style={{ backgroundColor: currentTheme.bgHex, color: currentTheme.textPrimaryHex }}
+      >
         {playerState === 'JOIN' && (
-          <PlayerJoin onJoinRoom={handlePlayerJoin} error={joinError} />
+          <PlayerJoin
+            onJoinRoom={handlePlayerJoin}
+            error={joinError}
+            activeThemeId={activeThemeId}
+            hostUser={hostUser}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
+            onGoToHost={handleGoToHost}
+            onHostLogout={handleHostLogout}
+          />
         )}
 
         {playerState === 'LOBBY' && (
-          <PlayerLobby player={playerInfo} roomInfo={playerRoomInfo} />
+          <PlayerLobby
+            player={playerInfo}
+            roomInfo={playerRoomInfo}
+            activeThemeId={activeThemeId}
+          />
         )}
 
         {playerState === 'QUESTION' && activePlayerQuestion && (
           <AnswerPad
             question={activePlayerQuestion}
+            activeThemeId={activeThemeId}
             onSelectAnswer={handlePlayerSubmit}
           />
         )}
@@ -290,37 +500,50 @@ export default function App() {
           <PlayerFeedback
             roundResult={playerRoundResult}
             playerStats={playerInfo}
+            activeThemeId={activeThemeId}
           />
         )}
 
         {playerState === 'PODIUM' && (
           <FinalPodium
             podium={podium}
+            activeThemeId={activeThemeId}
             onReset={() => {
               setPlayerState('JOIN');
               setPlayerInfo(null);
             }}
           />
         )}
+
+        {/* Host Authentication & Registration Modal */}
+        <HostAuthModal
+          isOpen={isAuthModalOpen}
+          onClose={() => setIsAuthModalOpen(false)}
+          onAuthSuccess={handleAuthSuccess}
+          activeThemeId={activeThemeId}
+        />
       </div>
     );
   }
 
-  // Host Mode
+  // Host Mode (Restricted to logged-in hosts)
   return (
-    <div className="min-h-screen bg-[#0B0F19] text-white">
-      {/* Floating Switcher */}
-      <div className="fixed top-3 right-4 z-50">
-        <button
-          onClick={toggleMode}
-          className="text-xs bg-slate-800/80 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-700 backdrop-blur-md shadow-lg transition"
-        >
-          📱 Switch to Mobile View
-        </button>
-      </div>
-
+    <div
+      className="min-h-screen transition-colors duration-300"
+      style={{ backgroundColor: currentTheme.bgHex, color: currentTheme.textPrimaryHex }}
+    >
       {hostState === 'DASHBOARD' && (
-        <HostDashboard onRoomCreated={handleRoomCreated} />
+        <HostDashboard
+          onRoomCreated={handleRoomCreated}
+          activeThemeId={activeThemeId}
+          onSelectTheme={handleSelectTheme}
+          hostUser={hostUser}
+          onLogout={handleHostLogout}
+          onBackToPlayer={() => {
+            setMode('PLAYER');
+            window.history.replaceState({}, '', '/');
+          }}
+        />
       )}
 
       {hostState === 'LOBBY' && room && (
@@ -328,8 +551,11 @@ export default function App() {
           room={room}
           players={players}
           publicUrl={publicUrl}
+          activeThemeId={activeThemeId}
+          onSelectTheme={handleSelectTheme}
           onStartGame={handleStartGame}
           onUpdatePublicUrl={handleUpdatePublicUrl}
+          onUpdateTimer={handleUpdateTimer}
         />
       )}
 
@@ -340,8 +566,11 @@ export default function App() {
           answeredCount={answeredCount}
           totalPlayers={players.length}
           roundResult={roundResult}
+          activeThemeId={activeThemeId}
+          onSelectTheme={handleSelectTheme}
           onRevealAnswer={handleRevealAnswer}
           onNextQuestion={handleShowLeaderboard}
+          onQuitGame={handleQuitGame}
         />
       )}
 
@@ -350,14 +579,21 @@ export default function App() {
           leaderboard={leaderboard}
           questionIndex={currentQuestion?.questionIndex || 0}
           totalQuestions={room?.totalQuestions || 5}
+          activeThemeId={activeThemeId}
+          onSelectTheme={handleSelectTheme}
           onNextQuestion={handleNextQuestion}
+          onQuitGame={handleQuitGame}
         />
       )}
 
       {hostState === 'FINAL_PODIUM' && (
         <FinalPodium
           podium={podium}
+          activeThemeId={activeThemeId}
+          onSelectTheme={handleSelectTheme}
           onReset={handleHostReset}
+          quizId={room?.quizId}
+          onPlayNextRound={room?.quizId ? handlePlayNextRound : null}
         />
       )}
     </div>

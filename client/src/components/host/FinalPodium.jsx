@@ -1,9 +1,13 @@
 import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
-import { Trophy, Crown, Medal, Download, RefreshCw, Star, Flame } from 'lucide-react';
+import { Trophy, Crown, Download, RefreshCw } from 'lucide-react';
 import { sound } from '../../utils/sound';
+import ThemeSelector from '../common/ThemeSelector';
+import { getTheme } from '../../utils/themes';
 
-export default function FinalPodium({ podium, onReset }) {
+export default function FinalPodium({ podium, activeThemeId, onSelectTheme, onReset, quizId, onPlayNextRound }) {
+  const theme = getTheme(activeThemeId);
+
   useEffect(() => {
     sound.playFanfare();
 
@@ -48,18 +52,33 @@ export default function FinalPodium({ podium, onReset }) {
   };
 
   return (
-    <div className="min-h-screen bg-[#0B0F19] text-white flex flex-col justify-between p-4 md:p-8">
+    <div
+      className="min-h-screen flex flex-col justify-between p-4 md:p-8 transition-colors duration-300"
+      style={{ backgroundColor: theme.bgHex, color: theme.textPrimaryHex }}
+    >
       {/* Header Banner */}
-      <div className="text-center pt-4">
-        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold uppercase tracking-wider mb-2">
-          <Trophy size={14} /> Grand Finale Showcase
+      <div
+        className="flex items-center justify-between max-w-4xl mx-auto w-full border-b pb-4 transition-colors duration-300"
+        style={{ borderColor: theme.borderHex }}
+      >
+        <div>
+          <div
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-bold uppercase tracking-wider mb-1"
+            style={{ backgroundColor: theme.innerBoxHex, borderColor: theme.borderHex, color: theme.timerColor }}
+          >
+            <Trophy size={13} style={{ color: theme.timerColor }} /> Grand Finale
+          </div>
+          <h1 className="text-2xl md:text-3xl font-black" style={{ color: theme.textPrimaryHex }}>
+            Top 10 Contestants
+          </h1>
         </div>
-        <h1 className="text-4xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-yellow-400 to-amber-500">
-          Top 10 Contestants
-        </h1>
-        <p className="text-slate-400 text-sm mt-1">
-          Final tournament standings based on speed and accuracy
-        </p>
+
+        {onSelectTheme && (
+          <ThemeSelector
+            activeThemeId={activeThemeId}
+            onSelectTheme={onSelectTheme}
+          />
+        )}
       </div>
 
       {/* 3D Olympic Podium for Top 3 */}
@@ -70,43 +89,49 @@ export default function FinalPodium({ podium, onReset }) {
             <div className="flex-1 flex flex-col items-center">
               <div className="mb-2 text-center animate-bounce-short">
                 <span className="text-2xl">🥈</span>
-                <h4 className="font-bold text-white text-sm md:text-base truncate max-w-[120px]">
+                <h4 className="font-bold text-sm md:text-base truncate max-w-[120px]" style={{ color: theme.textPrimaryHex }}>
                   {top2.nickname}
                 </h4>
-                <p className="text-xs font-mono font-bold text-slate-300">
+                <p className="text-xs font-mono font-bold" style={{ color: theme.textSecondaryHex }}>
                   {top2.score.toLocaleString()} pts
                 </p>
               </div>
-              <div className="w-full h-36 md:h-44 rounded-t-2xl bg-gradient-to-t from-slate-800 to-slate-600 border-t-2 border-slate-400 flex items-center justify-center shadow-xl">
-                <span className="text-4xl md:text-5xl font-black text-slate-300/40 font-mono">
+              <div
+                className="w-full h-36 md:h-44 rounded-t-3xl border-t-2 flex items-center justify-center shadow-md transition-colors duration-300"
+                style={{ backgroundColor: theme.innerBoxHex, borderColor: theme.borderHex }}
+              >
+                <span className="text-4xl md:text-5xl font-black font-mono opacity-40" style={{ color: theme.textPrimaryHex }}>
                   2
                 </span>
               </div>
             </div>
           ) : (
-            <div className="flex-1 opacity-20 h-28 bg-slate-800 rounded-t-2xl" />
+            <div className="flex-1 opacity-20 h-28 rounded-t-3xl" style={{ backgroundColor: theme.innerBoxHex }} />
           )}
 
           {/* 1st Place (Champion) */}
           {top1 ? (
             <div className="flex-1 flex flex-col items-center z-10">
               <div className="mb-2 text-center">
-                <Crown size={32} className="text-yellow-400 fill-yellow-400 mx-auto animate-bounce" />
-                <h3 className="font-black text-white text-base md:text-xl truncate max-w-[150px] drop-shadow-md">
+                <Crown size={32} className="text-amber-500 fill-amber-400 mx-auto animate-bounce" />
+                <h3 className="font-black text-base md:text-xl truncate max-w-[150px]" style={{ color: theme.textPrimaryHex }}>
                   {top1.nickname}
                 </h3>
-                <p className="text-sm font-mono font-extrabold text-amber-300">
+                <p className="text-sm font-mono font-black" style={{ color: theme.timerColor }}>
                   {top1.score.toLocaleString()} pts
                 </p>
               </div>
-              <div className="w-full h-52 md:h-64 rounded-t-2xl bg-gradient-to-t from-amber-700 via-amber-600 to-yellow-500 border-t-2 border-yellow-300 flex items-center justify-center shadow-2xl shadow-yellow-500/30">
-                <span className="text-6xl md:text-7xl font-black text-black/30 font-mono">
+              <div
+                className="w-full h-52 md:h-64 rounded-t-3xl border-t-2 flex items-center justify-center shadow-lg transition-colors duration-300"
+                style={{ backgroundColor: theme.cardHex, borderColor: theme.timerColor, boxShadow: `0 10px 30px ${theme.borderHex}` }}
+              >
+                <span className="text-6xl md:text-7xl font-black font-mono opacity-30" style={{ color: theme.timerColor }}>
                   1
                 </span>
               </div>
             </div>
           ) : (
-            <div className="flex-1 opacity-20 h-40 bg-slate-800 rounded-t-2xl" />
+            <div className="flex-1 opacity-20 h-40 rounded-t-3xl" style={{ backgroundColor: theme.innerBoxHex }} />
           )}
 
           {/* 3rd Place */}
@@ -114,43 +139,53 @@ export default function FinalPodium({ podium, onReset }) {
             <div className="flex-1 flex flex-col items-center">
               <div className="mb-2 text-center animate-bounce-short">
                 <span className="text-2xl">🥉</span>
-                <h4 className="font-bold text-white text-sm md:text-base truncate max-w-[120px]">
+                <h4 className="font-bold text-sm md:text-base truncate max-w-[120px]" style={{ color: theme.textPrimaryHex }}>
                   {top3.nickname}
                 </h4>
-                <p className="text-xs font-mono font-bold text-slate-300">
+                <p className="text-xs font-mono font-bold" style={{ color: theme.textSecondaryHex }}>
                   {top3.score.toLocaleString()} pts
                 </p>
               </div>
-              <div className="w-full h-28 md:h-36 rounded-t-2xl bg-gradient-to-t from-amber-950 to-orange-800 border-t-2 border-orange-500 flex items-center justify-center shadow-xl">
-                <span className="text-4xl md:text-5xl font-black text-orange-400/30 font-mono">
+              <div
+                className="w-full h-28 md:h-36 rounded-t-3xl border-t-2 flex items-center justify-center shadow-md transition-colors duration-300"
+                style={{ backgroundColor: theme.innerBoxHex, borderColor: theme.borderHex }}
+              >
+                <span className="text-4xl md:text-5xl font-black font-mono opacity-40" style={{ color: theme.textPrimaryHex }}>
                   3
                 </span>
               </div>
             </div>
           ) : (
-            <div className="flex-1 opacity-20 h-24 bg-slate-800 rounded-t-2xl" />
+            <div className="flex-1 opacity-20 h-24 rounded-t-3xl" style={{ backgroundColor: theme.innerBoxHex }} />
           )}
         </div>
 
         {/* Top 4 to 10 Table */}
         {restTop10.length > 0 && (
-          <div className="mt-8 bg-[#151D2F] border border-[#232E48] rounded-2xl p-4 shadow-xl">
-            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 px-2">
+          <div
+            className="mt-8 border rounded-3xl p-5 shadow-xs transition-colors duration-300"
+            style={{ backgroundColor: theme.cardHex, borderColor: theme.borderHex }}
+          >
+            <h4 className="text-xs font-bold uppercase tracking-wider mb-3 px-1" style={{ color: theme.textSecondaryHex }}>
               Contestants Ranked 4 - 10
             </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {restTop10.map((player) => (
                 <div
                   key={player.id}
-                  className="flex items-center justify-between p-2.5 rounded-xl bg-[#0B0F19] border border-[#232E48] text-xs"
+                  className="flex items-center justify-between p-3 rounded-2xl border text-xs font-medium"
+                  style={{ backgroundColor: theme.innerBoxHex, borderColor: theme.borderHex }}
                 >
                   <div className="flex items-center gap-2.5">
-                    <span className="w-6 h-6 rounded-md bg-slate-800 flex items-center justify-center font-bold text-slate-400">
+                    <span
+                      className="w-6 h-6 rounded-lg border flex items-center justify-center font-bold shadow-xs"
+                      style={{ backgroundColor: theme.cardHex, borderColor: theme.borderHex, color: theme.textPrimaryHex }}
+                    >
                       #{player.rank}
                     </span>
-                    <span className="font-bold text-white">{player.nickname}</span>
+                    <span className="font-bold" style={{ color: theme.textPrimaryHex }}>{player.nickname}</span>
                   </div>
-                  <span className="font-mono font-bold text-indigo-400">
+                  <span className="font-mono font-bold" style={{ color: theme.timerColor }}>
                     {player.score.toLocaleString()} pts
                   </span>
                 </div>
@@ -161,18 +196,34 @@ export default function FinalPodium({ podium, onReset }) {
       </div>
 
       {/* Action Buttons */}
-      <div className="flex items-center justify-center gap-3 pt-4 border-t border-[#232E48] max-w-xl mx-auto w-full">
+      <div
+        className="flex items-center justify-center gap-3 pt-4 border-t max-w-2xl mx-auto w-full transition-colors duration-300 flex-wrap"
+        style={{ borderColor: theme.borderHex }}
+      >
         <button
           onClick={handleExportJson}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#151D2F] hover:bg-slate-800 border border-[#232E48] text-xs font-bold text-slate-200 transition"
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl border text-xs font-bold shadow-xs transition hover:opacity-90"
+          style={{ backgroundColor: theme.cardHex, borderColor: theme.borderHex, color: theme.textPrimaryHex }}
         >
           <Download size={14} /> Export Results (JSON)
         </button>
+
+        {onPlayNextRound && (
+          <button
+            onClick={onPlayNextRound}
+            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r ${theme.accentGradient} text-white text-xs font-black shadow-md transition transform hover:scale-[1.02] cursor-pointer`}
+            title="Launch a new game with different questions from the bank that were not asked yet!"
+          >
+            <RefreshCw size={14} className="animate-spin-slow" /> Play Next Round (Fresh Questions)
+          </button>
+        )}
+
         <button
           onClick={onReset}
-          className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition"
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl border text-xs font-bold shadow-xs transition hover:opacity-90"
+          style={{ backgroundColor: theme.cardHex, borderColor: theme.borderHex, color: theme.textPrimaryHex }}
         >
-          <RefreshCw size={14} /> Host Another Quiz
+          <RefreshCw size={14} /> Back to Dashboard
         </button>
       </div>
     </div>

@@ -1,0 +1,88 @@
+version: '3.8'
+
+# Enterprise Multi-Node Cluster Stack for PulseQuiz
+# Capable of scaling from 100 to 100,000 (1 Lakh) active mobile participants
+
+services:
+  # 1. Reverse Proxy & Sticky-Session Load Balancer
+  load-balancer:
+    image: nginx:alpine
+    container_name: pulsequiz-load-balancer
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend-1
+      - backend-2
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+
+  # 2. Redis Pub/Sub Message Broker for Cross-Node WebSocket Synchronization
+  redis:
+    image: redis:7-alpine
+    container_name: pulsequiz-redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # 3. PostgreSQL Database with Tuned Connection Limits
+  postgres:
+    image: postgres:16-alpine
+    container_name: pulsequiz-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: quzi
+    ports:
+      - "5432:5432"
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=1GB
+      -c effective_cache_size=3GB
+      -c work_mem=16MB
+      -c maintenance_work_mem=256MB
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # 4. Backend Worker Node 1
+  backend-1:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: pulsequiz-backend-1
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/quzi
+      REDIS_URL: redis://redis:6379
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost}
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # 5. Backend Worker Node 2
+  backend-2:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: pulsequiz-backend-2
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/quzi
+      REDIS_URL: redis://redis:6379
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost}
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+volumes:
+  pgdata:
