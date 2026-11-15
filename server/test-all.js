@@ -33,10 +33,10 @@ async function runTestSuite() {
 
   // Test 2: Excel Template Generation & Parsing
   console.log('2. Testing Excel Template Ingestion Pipeline...');
-  const templateBuf = generateTemplateBuffer();
+  const templateBuf = await generateTemplateBuffer();
   assert.ok(templateBuf && templateBuf.length > 0, 'Template buffer must not be empty');
 
-  const parsedQuestions = parseExcelBuffer(templateBuf);
+  const parsedQuestions = await parseExcelBuffer(templateBuf);
   assert.strictEqual(parsedQuestions.length, 5, 'Template should contain 5 sample questions');
   assert.strictEqual(parsedQuestions[0].options.length, 4, 'Question must contain 4 options');
   assert.ok(parsedQuestions[0].correctOptionIndex >= 0 && parsedQuestions[0].correctOptionIndex <= 3, 'Valid correct index');

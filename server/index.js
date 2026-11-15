@@ -251,9 +251,9 @@ app.post('/api/config/public-url', requireAuth, (req, res) => {
 });
 
 // Download Excel Template
-app.get('/api/quiz/template/excel', (req, res) => {
+app.get('/api/quiz/template/excel', async (req, res) => {
   try {
-    const buffer = generateTemplateBuffer();
+    const buffer = await generateTemplateBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="PulseQuiz_Questions_Template.xlsx"');
     res.send(buffer);
@@ -264,7 +264,7 @@ app.get('/api/quiz/template/excel', (req, res) => {
 });
 
 // Upload & Parse Excel File (Protected - Host Auth Required with uploadLimiter)
-app.post('/api/quiz/upload/excel', uploadLimiter, requireAuth, upload.any(), (req, res) => {
+app.post('/api/quiz/upload/excel', uploadLimiter, requireAuth, upload.any(), async (req, res) => {
   try {
     const files = Array.isArray(req.files) ? req.files : (req.file ? [req.file] : []);
     if (!Array.isArray(files) || files.length === 0) {
@@ -273,7 +273,7 @@ app.post('/api/quiz/upload/excel', uploadLimiter, requireAuth, upload.any(), (re
     let combinedPool = [];
     for (const f of files) {
       if (!f || !Buffer.isBuffer(f.buffer)) continue;
-      const parsed = parseExcelBuffer(f.buffer);
+      const parsed = await parseExcelBuffer(f.buffer);
       if (Array.isArray(parsed) && parsed.length > 0) {
         combinedPool.push(...parsed);
       }
