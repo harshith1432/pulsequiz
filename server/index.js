@@ -224,9 +224,20 @@ app.get('/api/metrics', (req, res) => {
 
 // Configuration endpoint returning public URL (Cloudflare or LAN)
 app.get('/api/config', (req, res) => {
+  let isCloudflare = false;
+  if (process.env.PUBLIC_URL) {
+    try {
+      const parsed = new URL(process.env.PUBLIC_URL);
+      const host = parsed.hostname.toLowerCase();
+      isCloudflare = host === 'trycloudflare.com' || host.endsWith('.trycloudflare.com') || host.endsWith('.cloudflare.com');
+    } catch {
+      isCloudflare = false;
+    }
+  }
+
   res.json({
     publicUrl: getEffectivePublicUrl(),
-    isCloudflare: Boolean(process.env.PUBLIC_URL && process.env.PUBLIC_URL.includes('cloudflare')),
+    isCloudflare,
     localIp: getLocalIpAddress(),
     port: PORT,
     clientPort: 5173

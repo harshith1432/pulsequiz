@@ -27,6 +27,17 @@ export default function HostLobby({
     }
   };
 
+  // Validate Cloudflare Tunnel URL via strict hostname resolution to eliminate CodeQL js/incomplete-url-substring-sanitization
+  const isCloudflareUrl = (urlString) => {
+    try {
+      const parsed = new URL(urlString, window.location.origin);
+      const host = parsed.hostname.toLowerCase();
+      return host === 'trycloudflare.com' || host.endsWith('.trycloudflare.com') || host.endsWith('.cloudflare.com');
+    } catch {
+      return false;
+    }
+  };
+
   // Compute best available public URL, strictly prioritizing Cloudflare Tunnel HTTPS over local LAN IP
   const computeBestPublicUrl = (urlA, urlB) => {
     const candidates = [
@@ -35,8 +46,8 @@ export default function HostLobby({
       window.location.origin
     ].filter(Boolean);
 
-    // 1. Look for Cloudflare tunnel URL first
-    const cf = candidates.find(u => u.includes('trycloudflare.com') || u.includes('cloudflare'));
+    // 1. Look for Cloudflare tunnel URL first via parsed hostname verification
+    const cf = candidates.find(u => isCloudflareUrl(u));
     if (cf) return cf.replace(/\/+$/, '');
 
     // 2. Look for any HTTPS URL

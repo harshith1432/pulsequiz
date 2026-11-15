@@ -48,9 +48,19 @@ export default function App() {
     document.body.style.color = currentTheme.textPrimaryHex;
   }, [currentTheme]);
 
-  // Effective Public URL for Cloudflare Tunnel (fallback to origin if already on tunnel)
+  // Effective Public URL for Cloudflare Tunnel (strictly validates origin hostname against CodeQL js/incomplete-url-substring-sanitization)
+  const isOriginCloudflare = () => {
+    try {
+      const parsed = new URL(window.location.origin);
+      const host = parsed.hostname.toLowerCase();
+      return host === 'trycloudflare.com' || host.endsWith('.trycloudflare.com') || host.endsWith('.cloudflare.com');
+    } catch {
+      return false;
+    }
+  };
+
   const [publicUrl, setPublicUrl] = useState(() => {
-    if (window.location.origin.includes('cloudflare') || window.location.origin.includes('trycloudflare.com')) {
+    if (isOriginCloudflare()) {
       return window.location.origin;
     }
     return 'https://appreciation-computed-dame-lucas.trycloudflare.com';
