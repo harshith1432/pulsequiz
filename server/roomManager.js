@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { calculateScore } = require('./scoring');
 
@@ -31,7 +32,7 @@ class RoomManager {
       hostToken,
       quizId,
       userId,
-      quizTitle: quizTitle || 'Live Interactive Quiz',
+      quizTitle: (typeof quizTitle === 'string' && quizTitle.trim()) ? quizTitle.trim() : 'Live Interactive Quiz',
       questions,
       state: 'LOBBY', // 'LOBBY' | 'QUESTION_ACTIVE' | 'QUESTION_ENDED' | 'FINAL_PODIUM'
       currentQuestionIndex: -1,
@@ -47,17 +48,24 @@ class RoomManager {
   }
 
   getRoom(pin) {
-    return this.rooms.get(pin) || null;
+    if (!pin) return null;
+    const cleanPin = typeof pin === 'string' ? pin.trim() : String(pin).trim();
+    return this.rooms.get(cleanPin) || null;
   }
 
   validateHost(pin, hostToken) {
+    if (!pin || !hostToken || typeof pin !== 'string' || typeof hostToken !== 'string') return false;
     const room = this.getRoom(pin);
-    if (!room) return false;
-    return room.hostToken === hostToken;
+    if (!room || !room.hostToken) return false;
+    const bufA = Buffer.from(room.hostToken, 'utf8');
+    const bufB = Buffer.from(hostToken, 'utf8');
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
   }
 
   joinPlayer(pin, socketId, rawNickname) {
-    const room = this.getRoom(pin);
+    const cleanPin = typeof pin === 'string' ? pin.trim() : (pin != null ? String(pin).trim() : '');
+    const room = this.getRoom(cleanPin);
     if (!room) {
       throw new Error('Room not found. Please check the 6-digit PIN.');
     }
@@ -67,13 +75,14 @@ class RoomManager {
     }
 
     // Sanitize nickname (OWASP A03 / XSS defense)
-    let sanitized = (rawNickname || 'Player')
+    const nickStr = (typeof rawNickname === 'string' ? rawNickname : (rawNickname != null ? String(rawNickname) : 'Player'));
+    let sanitized = nickStr
       .replace(/[<>'"/\\&;]/g, '')
       .trim()
       .substring(0, 20);
 
     if (sanitized.length < 2) {
-      sanitized = `Player_${socketId.substring(0, 4)}`;
+      sanitized = `Player_${String(socketId).substring(0, 4)}`;
     }
 
     // Check for duplicate nickname

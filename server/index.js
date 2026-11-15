@@ -4,10 +4,20 @@ const { Server } = require('socket.io');
 const multer = require('multer');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-const { securityMiddleware, pinRateLimiter } = require('./middleware/security');
+const {
+  securityMiddleware,
+  prototypePollutionGuard,
+  authLimiter,
+  uploadLimiter,
+  roomCreationLimiter,
+  generalApiLimiter,
+  pinLimiter,
+  pinRateLimiter
+} = require('./middleware/security');
 const { generateTemplateBuffer, parseExcelBuffer } = require('./services/excelService');
 const { parsePdfBuffer } = require('./services/pdfService');
 const { shuffleAndDistributeOptions, sampleRandomQuestions, pickUnusedQuestions } = require('./utils/questionShuffle');
@@ -17,6 +27,9 @@ const dbQueue = require('./services/dbQueue');
 
 const app = express();
 const server = http.createServer(app);
+
+// Enable trust proxy for Cloudflare / reverse proxy rate limiting and IP resolution
+app.set('trust proxy', 1);
 
 // Socket.IO server with high-concurrency buffer & transport settings
 const io = new Server(server, {
@@ -40,7 +53,7 @@ if (process.env.REDIS_URL) {
     io.adapter(createAdapter(pubClient, subClient));
     console.log('[Socket.IO] Redis horizontal scaling adapter activated.');
   } catch (err) {
-    console.warn('[Socket.IO] Redis adapter init warning (running in-memory):', err.message);
+    console.warn('[Socket.IO] Redis adapter init warning (running in-memory): %s', err.message);
   }
 }
 
@@ -48,11 +61,13 @@ if (process.env.REDIS_URL) {
 const PORT = process.env.PORT || 3001;
 
 // Initialize PostgreSQL database schema
-db.initDb().catch(err => console.error('Database initialization warning:', err.message));
+db.initDb().catch(err => console.error('Database initialization warning: %s', err.message));
 
-// Body parsers & security
-app.use(express.json());
+// Body parsers, security headers, prototype pollution protection & global API rate limiting
+app.use(express.json({ limit: '2mb' }));
 app.use(securityMiddleware);
+app.use(prototypePollutionGuard);
+app.use('/api/', generalApiLimiter);
 
 // Multer memory storage for direct buffer parsing
 const upload = multer({
@@ -95,24 +110,32 @@ function getEffectivePublicUrl() {
 
 // ---------------- USER AUTHENTICATION & SESSION MANAGEMENT ----------------
 
-const crypto = require('crypto');
 const JWT_SECRET = process.env.JWT_SECRET || 'pulsequiz-hmac-host-secret-key-2026';
 
 function createSessionToken(user) {
-  const payload = Buffer.from(JSON.stringify({ id: user.id, username: user.username, ts: Date.now() })).toString('base64');
+  const exp = Date.now() + 24 * 60 * 60 * 1000; // 24-hour expiration
+  const payload = Buffer.from(JSON.stringify({ id: user.id, username: user.username, ts: Date.now(), exp })).toString('base64');
   const sig = crypto.createHmac('sha256', JWT_SECRET).update(payload).digest('hex');
   return `${payload}.${sig}`;
 }
 
 function verifySessionToken(token) {
-  if (!token) return null;
+  if (!token || typeof token !== 'string') return null;
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [payload, sig] = parts;
   const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(payload).digest('hex');
-  if (sig !== expectedSig) return null;
+  const bufSig = Buffer.from(sig, 'utf8');
+  const bufExp = Buffer.from(expectedSig, 'utf8');
+  if (bufSig.length !== bufExp.length || !crypto.timingSafeEqual(bufSig, bufExp)) {
+    return null;
+  }
   try {
-    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    const data = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    if (data.exp && typeof data.exp === 'number' && Date.now() > data.exp) {
+      return null;
+    }
+    return data;
   } catch {
     return null;
   }
@@ -139,11 +162,14 @@ function optionalAuth(req, res, next) {
 
 // ---------------- REST API ROUTES ----------------
 
-// --- AUTHENTICATION ENDPOINTS ---
+// --- AUTHENTICATION ENDPOINTS (Protected with authLimiter against brute-force) ---
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password } = req.body || {};
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Username and password must be valid strings.' });
+    }
     const user = await db.createUser(username, password);
     const token = createSessionToken(user);
     res.json({ success: true, token, user });
@@ -152,9 +178,12 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password } = req.body || {};
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Username and password must be valid strings.' });
+    }
     const user = await db.authenticateUser(username, password);
     const token = createSessionToken(user);
     res.json({ success: true, token, user });
@@ -204,14 +233,21 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-// Allow updating the public URL dynamically in runtime if tunnel changes
-app.post('/api/config/public-url', (req, res) => {
-  const { publicUrl } = req.body;
+// Allow updating the public URL dynamically in runtime if tunnel changes (Protected - Host Auth Required)
+app.post('/api/config/public-url', requireAuth, (req, res) => {
+  const { publicUrl } = req.body || {};
   if (publicUrl && typeof publicUrl === 'string') {
-    process.env.PUBLIC_URL = publicUrl.trim();
-    return res.json({ success: true, publicUrl: getEffectivePublicUrl() });
+    try {
+      const parsed = new URL(publicUrl.trim());
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        process.env.PUBLIC_URL = parsed.origin + (parsed.pathname !== '/' ? parsed.pathname.replace(/\/+$/, '') : '');
+        return res.json({ success: true, publicUrl: getEffectivePublicUrl() });
+      }
+    } catch {
+      // Invalid URL format
+    }
   }
-  res.status(400).json({ error: 'Valid publicUrl string is required.' });
+  res.status(400).json({ error: 'A valid http: or https: publicUrl is required.' });
 });
 
 // Download Excel Template
@@ -222,20 +258,21 @@ app.get('/api/quiz/template/excel', (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="PulseQuiz_Questions_Template.xlsx"');
     res.send(buffer);
   } catch (err) {
-    console.error('Error generating template:', err);
+    console.error('Error generating template: %s', err.message || String(err));
     res.status(500).json({ error: 'Failed to generate Excel template.' });
   }
 });
 
-// Upload & Parse Excel File (Protected - Host Auth Required)
-app.post('/api/quiz/upload/excel', requireAuth, upload.any(), (req, res) => {
+// Upload & Parse Excel File (Protected - Host Auth Required with uploadLimiter)
+app.post('/api/quiz/upload/excel', uploadLimiter, requireAuth, upload.any(), (req, res) => {
   try {
-    const files = req.files && req.files.length > 0 ? req.files : (req.file ? [req.file] : []);
-    if (files.length === 0) {
+    const files = Array.isArray(req.files) ? req.files : (req.file ? [req.file] : []);
+    if (!Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ error: 'No Excel file uploaded.' });
     }
     let combinedPool = [];
     for (const f of files) {
+      if (!f || !Buffer.isBuffer(f.buffer)) continue;
       const parsed = parseExcelBuffer(f.buffer);
       if (Array.isArray(parsed) && parsed.length > 0) {
         combinedPool.push(...parsed);
@@ -245,7 +282,13 @@ app.post('/api/quiz/upload/excel', requireAuth, upload.any(), (req, res) => {
       return res.status(400).json({ error: 'Could not extract any valid questions from the Excel file.' });
     }
 
-    const sampleCount = req.body.sampleCount ? parseInt(req.body.sampleCount, 10) : null;
+    let sampleCount = null;
+    if (req.body && (typeof req.body.sampleCount === 'string' || typeof req.body.sampleCount === 'number')) {
+      const parsed = parseInt(String(req.body.sampleCount), 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        sampleCount = parsed;
+      }
+    }
     let questions;
     if (sampleCount && sampleCount > 0 && sampleCount < combinedPool.length) {
       questions = sampleRandomQuestions(combinedPool, sampleCount);
@@ -262,36 +305,42 @@ app.post('/api/quiz/upload/excel', requireAuth, upload.any(), (req, res) => {
       pool: combinedPool
     });
   } catch (err) {
-    console.error('Error parsing Excel:', err);
+    console.error('Error parsing Excel: %s', err.message || String(err));
     res.status(400).json({ error: err.message || 'Failed to parse Excel file.' });
   }
 });
 
-// Upload & Parse PDF File(s) - Supports up to 5 PDFs simultaneously (Protected - Host Auth Required)
-app.post('/api/quiz/upload/pdf', requireAuth, upload.any(), async (req, res) => {
+// Upload & Parse PDF File(s) - Supports up to 5 PDFs simultaneously (Protected - Host Auth Required with uploadLimiter)
+app.post('/api/quiz/upload/pdf', uploadLimiter, requireAuth, upload.any(), async (req, res) => {
   try {
-    const files = req.files && req.files.length > 0 ? req.files : (req.file ? [req.file] : []);
-    if (files.length === 0) {
+    const files = Array.isArray(req.files) ? req.files : (req.file ? [req.file] : []);
+    if (!Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ error: 'No PDF file(s) uploaded.' });
     }
     if (files.length > 5) {
       return res.status(400).json({ error: 'A maximum of 5 PDF files can be uploaded at once.' });
     }
 
-    const apiKey = req.body.geminiApiKey || req.headers['x-gemini-key'] || null;
+    const rawApiKey = (req.body && typeof req.body.geminiApiKey === 'string')
+      ? req.body.geminiApiKey.trim()
+      : (typeof req.headers['x-gemini-key'] === 'string' ? req.headers['x-gemini-key'].trim() : null);
+    const apiKey = rawApiKey || null;
+
     let combinedPool = [];
     const processedFileNames = [];
 
     // Parse all uploaded PDF buffers concurrently in parallel
     const results = await Promise.all(
       files.map(async (file) => {
+        if (!file || !Buffer.isBuffer(file.buffer)) return null;
         try {
           const extracted = await parsePdfBuffer(file.buffer, apiKey);
           if (Array.isArray(extracted) && extracted.length > 0) {
-            return { fileName: file.originalname, questions: extracted };
+            const safeName = String(file.originalname || 'Document.pdf').replace(/[\r\n%]/g, '');
+            return { fileName: safeName, questions: extracted };
           }
         } catch (pdfErr) {
-          console.warn(`[PDF Parse] Warning parsing file "${file.originalname}":`, pdfErr.message);
+          console.warn('[PDF Parse] Warning parsing file "%s": %s', String(file.originalname || 'unknown').replace(/[\r\n%]/g, ''), pdfErr.message);
         }
         return null;
       })
@@ -309,13 +358,20 @@ app.post('/api/quiz/upload/pdf', requireAuth, upload.any(), async (req, res) => 
     }
 
     // Ensure every question in combinedPool has an ID
-    combinedPool.forEach((q, idx) => {
+    combinedPool.forEach((q) => {
       if (!q.id) q.id = uuidv4();
     });
 
     // Check if host specified a sampleCount (default 20)
-    const targetCount = req.body.sampleCount ? parseInt(req.body.sampleCount, 10) : 20;
-    const { selectedQuestions, updatedUsedIds, usedCount, remainingCount, totalPoolCount } =
+    let targetCount = 20;
+    if (req.body && (typeof req.body.sampleCount === 'string' || typeof req.body.sampleCount === 'number')) {
+      const parsedCount = parseInt(String(req.body.sampleCount), 10);
+      if (!isNaN(parsedCount) && parsedCount > 0 && parsedCount <= 1000) {
+        targetCount = parsedCount;
+      }
+    }
+
+    const { selectedQuestions, updatedUsedIds, usedCount, remainingCount } =
       pickUnusedQuestions(combinedPool, [], targetCount);
 
     // Auto-save this classroom & question bank immediately to PostgreSQL for this host
@@ -348,7 +404,7 @@ app.post('/api/quiz/upload/pdf', requireAuth, upload.any(), async (req, res) => 
       pool: combinedPool
     });
   } catch (err) {
-    console.error('Error parsing PDF:', err);
+    console.error('Error parsing PDF: %s', err.message || String(err));
     res.status(400).json({ error: err.message || 'Failed to parse PDF document.' });
   }
 });
@@ -481,10 +537,13 @@ app.delete('/api/quizzes/:id', requireAuth, async (req, res) => {
   }
 });
 
-// Create Room & Persist to PostgreSQL (Optional Auth for guest or logged-in host)
-app.post('/api/rooms', optionalAuth, async (req, res) => {
+// Create Room & Persist to PostgreSQL (Optional Auth for guest or logged-in host with roomCreationLimiter)
+app.post('/api/rooms', roomCreationLimiter, optionalAuth, async (req, res) => {
   try {
-    let { quizTitle, questions, quizId, pickFresh, sampleCount } = req.body;
+    const body = req.body || {};
+    let { quizTitle, questions, quizId, pickFresh, sampleCount } = body;
+    if (quizTitle && typeof quizTitle !== 'string') quizTitle = String(quizTitle);
+    if (quizId && typeof quizId !== 'string') quizId = String(quizId);
 
     const userId = req.user ? req.user.id : null;
     let savedQuiz = null;
@@ -496,19 +555,23 @@ app.post('/api/rooms', optionalAuth, async (req, res) => {
     if (savedQuiz) {
       quizTitle = quizTitle || savedQuiz.title;
 
-      // If pickFresh is requested, or if no questions provided, pick unused questions from pool
-      if (pickFresh || !questions || !Array.isArray(questions) || questions.length === 0) {
+      // If pickFresh is requested, pick unused questions from pool; otherwise default to saved questions
+      if (pickFresh) {
         const pool = (savedQuiz.questionPool && savedQuiz.questionPool.length > 0)
           ? savedQuiz.questionPool
           : savedQuiz.questions;
         
-        const count = sampleCount ? parseInt(sampleCount, 10) : (savedQuiz.defaultSampleCount || 20);
+        const count = sampleCount ? parseInt(String(sampleCount), 10) : (savedQuiz.defaultSampleCount || 20);
         const nextRound = pickUnusedQuestions(pool, savedQuiz.usedQuestionIds, count);
         
         questions = nextRound.selectedQuestions;
         if (userId) {
           await db.updateQuizUsedQuestions(quizId, nextRound.updatedUsedIds, userId);
         }
+      } else if (!questions || !Array.isArray(questions) || questions.length === 0) {
+        questions = (Array.isArray(savedQuiz.questions) && savedQuiz.questions.length > 0)
+          ? savedQuiz.questions
+          : savedQuiz.questionPool;
       }
     }
 
@@ -534,19 +597,29 @@ app.post('/api/rooms', optionalAuth, async (req, res) => {
   }
 });
 
-// Get Past Winners & History for a Saved Quiz
-app.get('/api/quizzes/:id/winners', optionalAuth, async (req, res) => {
+// Get Past Winners & History for a Saved Quiz (Protected - Host Auth Required)
+app.get('/api/quizzes/:id/winners', requireAuth, async (req, res) => {
   try {
-    const sessions = await db.getQuizPastWinners(req.params.id, req.user ? req.user.id : null);
+    const quizId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    if (!quizId) {
+      return res.status(400).json({ error: 'Quiz ID is required.' });
+    }
+    // Verify quiz authorization/ownership first
+    const quiz = await db.getQuizById(quizId, req.user.id);
+    if (!quiz) {
+      return res.status(404).json({ error: 'Quiz not found or unauthorized.' });
+    }
+    const sessions = await db.getQuizPastWinners(quizId, req.user.id);
     res.json({ success: true, sessions });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Failed to fetch past winners.' });
   }
 });
 
-// Get Room Public Status
-app.get('/api/rooms/:pin', pinRateLimiter, (req, res) => {
-  const room = roomManager.getRoom(req.params.pin);
+// Get Room Public Status (Rate limited with pinLimiter to prevent room PIN brute forcing)
+app.get('/api/rooms/:pin', pinLimiter, (req, res) => {
+  const pin = typeof req.params.pin === 'string' ? req.params.pin.trim() : '';
+  const room = roomManager.getRoom(pin);
   if (!room) {
     return res.status(404).json({ error: 'Room not found. Check the 6-digit PIN.' });
   }
@@ -674,7 +747,7 @@ io.on('connection', (socket) => {
                 io.to(`room:${pin}`).emit('round:ended', roundResult);
               }
             } catch (autoRevealErr) {
-              console.error('Auto reveal error:', autoRevealErr);
+              console.error('Auto reveal error: %s', autoRevealErr.message || String(autoRevealErr));
             }
           }, 600);
         }
@@ -719,12 +792,18 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Host updates room theme (10 creamy aesthetic themes)
-  socket.on('room:set_theme', ({ pin, themeId }) => {
+  // Host updates room theme (10 creamy aesthetic themes - Host Auth Required)
+  socket.on('room:set_theme', ({ pin, hostToken, themeId }, callback) => {
+    if (!pin || !hostToken || !roomManager.validateHost(pin, hostToken)) {
+      if (callback) callback({ success: false, error: 'Unauthorized: Invalid host token.' });
+      return;
+    }
+    const safeThemeId = typeof themeId === 'string' ? themeId.trim().replace(/[^a-zA-Z0-9_-]/g, '') : '';
     const room = roomManager.getRoom(pin);
-    if (room) {
-      room.themeId = themeId;
-      io.to(`room:${pin}`).emit('room:theme_updated', { themeId });
+    if (room && safeThemeId) {
+      room.themeId = safeThemeId;
+      io.to(`room:${pin}`).emit('room:theme_updated', { themeId: safeThemeId });
+      if (callback) callback({ success: true, themeId: safeThemeId });
     }
   });
 
@@ -798,14 +877,14 @@ io.on('connection', (socket) => {
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('[PulseQuiz Uncaught Exception]:', err);
+  console.error('[PulseQuiz Uncaught Exception]: %s', err?.stack || err?.message || String(err));
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[PulseQuiz Unhandled Rejection]:', reason);
+  console.error('[PulseQuiz Unhandled Rejection]: %s', reason?.stack || reason?.message || String(reason));
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`PulseQuiz server running on port ${PORT}`);
-  console.log(`Public Cloudflare / LAN URL: ${getEffectivePublicUrl()}`);
+server.listen(PORT, () => {
+  console.log('PulseQuiz server running on port %s', PORT);
+  console.log('Public Cloudflare / LAN URL: %s', getEffectivePublicUrl());
 });

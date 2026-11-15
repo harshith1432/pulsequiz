@@ -139,7 +139,7 @@ class DatabaseQueue {
       }
     } catch (err) {
       this.stats.errors++;
-      console.error('[DatabaseQueue] Bulk flush error (re-queuing batch):', err.message);
+      console.error('[DatabaseQueue] Bulk flush error (re-queuing batch): %s', err.message);
       // Re-queue failed batch at front of queue so data is never dropped
       this.queue.unshift(...batch);
     } finally {

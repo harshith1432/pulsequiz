@@ -2,6 +2,46 @@ const XLSX = require('xlsx');
 const { v4: uuidv4 } = require('uuid');
 
 /**
+ * Sanitizes cell text to protect against CSV / Formula Injection (CWE-1236)
+ * and prototype tampering. Strips leading formula characters (=, +, -, @, |, \t, \r).
+ */
+function sanitizeCellText(val) {
+  if (val === null || val === undefined) return '';
+  let str = String(val).trim();
+  // Strip dangerous starting characters that spreadsheet software interprets as formulas
+  if (/^[=+\-@|\t\r]/.test(str)) {
+    str = str.replace(/^[=+\-@|\t\r]+/, '').trim();
+  }
+  return str;
+}
+
+/**
+ * Safely extracts a field from a spreadsheet row using alias keys,
+ * enforcing Object.prototype safeguards and rejecting prototype pollution vectors.
+ */
+function getSafeRowField(row, aliases) {
+  if (!row || typeof row !== 'object') return '';
+
+  for (const key of Object.keys(row)) {
+    // Block prototype pollution vectors
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(row, key)) {
+      continue;
+    }
+
+    const cleanKey = key.trim().toLowerCase();
+    for (const alias of aliases) {
+      if (cleanKey === alias.toLowerCase()) {
+        return sanitizeCellText(row[key]);
+      }
+    }
+  }
+  return '';
+}
+
+/**
  * Generates a styled Excel template workbook as a Buffer.
  */
 function generateTemplateBuffer() {
@@ -105,14 +145,33 @@ function generateTemplateBuffer() {
 
 /**
  * Parses an uploaded Excel buffer into an array of validated questions.
+ * Safeguarded against formula injection, prototype pollution, and malformed structures.
  */
 function parseExcelBuffer(buffer) {
-  const wb = XLSX.read(buffer, { type: 'buffer' });
+  if (!buffer || !Buffer.isBuffer(buffer)) {
+    throw new Error('A valid file buffer is required for Excel parsing.');
+  }
+
+  // Parse workbook safely without evaluating formulas
+  const wb = XLSX.read(buffer, {
+    type: 'buffer',
+    cellFormula: false,
+    cellHTML: false,
+    cellNF: false
+  });
+
+  if (!wb.SheetNames || !Array.isArray(wb.SheetNames) || wb.SheetNames.length === 0) {
+    throw new Error('The uploaded file does not contain any readable sheets.');
+  }
+
   const firstSheetName = wb.SheetNames[0];
   const ws = wb.Sheets[firstSheetName];
+  if (!ws) {
+    throw new Error('The primary worksheet could not be read.');
+  }
 
   const rawRows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-  if (!rawRows || rawRows.length === 0) {
+  if (!rawRows || !Array.isArray(rawRows) || rawRows.length === 0) {
     throw new Error('The uploaded Excel sheet contains no readable rows.');
   }
 
@@ -120,26 +179,26 @@ function parseExcelBuffer(buffer) {
 
   for (let i = 0; i < rawRows.length; i++) {
     const row = rawRows[i];
+    if (!row || typeof row !== 'object') continue;
 
-    // Find question text
-    const questionText = (
-      row['Question'] ||
-      row['question'] ||
-      row['Question Text'] ||
-      row['Prompt'] ||
-      row['QUESTION'] ||
-      ''
-    ).toString().trim();
+    // Find question text safely
+    const questionText = getSafeRowField(row, [
+      'Question',
+      'question',
+      'Question Text',
+      'Prompt',
+      'QUESTION'
+    ]);
 
     if (!questionText) {
       continue; // skip empty rows
     }
 
-    // Find options
-    const optA = (row['Option A'] || row['option a'] || row['A'] || row['Option 1'] || '').toString().trim();
-    const optB = (row['Option B'] || row['option b'] || row['B'] || row['Option 2'] || '').toString().trim();
-    const optC = (row['Option C'] || row['option c'] || row['C'] || row['Option 3'] || '').toString().trim();
-    const optD = (row['Option D'] || row['option d'] || row['D'] || row['Option 4'] || '').toString().trim();
+    // Find options safely
+    const optA = getSafeRowField(row, ['Option A', 'option a', 'A', 'Option 1']);
+    const optB = getSafeRowField(row, ['Option B', 'option b', 'B', 'Option 2']);
+    const optC = getSafeRowField(row, ['Option C', 'option c', 'C', 'Option 3']);
+    const optD = getSafeRowField(row, ['Option D', 'option d', 'D', 'Option 4']);
 
     if (!optA || !optB) {
       // Must have at least options A and B
@@ -154,15 +213,14 @@ function parseExcelBuffer(buffer) {
     ];
 
     // Correct Option resolution
-    const correctRaw = (
-      row['Correct Option'] ||
-      row['Correct Answer'] ||
-      row['Correct'] ||
-      row['Answer'] ||
-      row['correct'] ||
-      row['answer'] ||
-      'A'
-    ).toString().trim();
+    const correctRaw = getSafeRowField(row, [
+      'Correct Option',
+      'Correct Answer',
+      'Correct',
+      'Answer',
+      'correct',
+      'answer'
+    ]) || 'A';
 
     let correctIndex = 0;
     const upper = correctRaw.toUpperCase();
@@ -179,20 +237,19 @@ function parseExcelBuffer(buffer) {
       }
     }
 
-    // Time limit
-    let timeLimit = parseInt(
-      row['Time Limit (seconds)'] ||
-      row['Time Limit'] ||
-      row['Timer'] ||
-      row['Time'] ||
-      20,
-      10
-    );
+    // Time limit parsing
+    const timeLimitStr = getSafeRowField(row, [
+      'Time Limit (seconds)',
+      'Time Limit',
+      'Timer',
+      'Time'
+    ]);
+    let timeLimit = parseInt(timeLimitStr || '20', 10);
     if (isNaN(timeLimit) || timeLimit < 5 || timeLimit > 120) {
       timeLimit = 20;
     }
 
-    const explanation = (row['Explanation'] || row['explanation'] || '').toString().trim();
+    const explanation = getSafeRowField(row, ['Explanation', 'explanation']);
 
     questions.push({
       id: uuidv4(),

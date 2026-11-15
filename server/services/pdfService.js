@@ -23,14 +23,14 @@ async function parsePdfBuffer(buffer, apiKey = null) {
     const data = await pdfParse(buffer);
     pdfText = data.text || '';
   } catch (err) {
-    console.warn('[PDF Parser] Local pdf-parse warning:', err.message);
+    console.warn('[PDF Parser] Local pdf-parse warning: %s', err.message);
   }
 
   if (pdfText && pdfText.trim().length > 30) {
     const localQuestions = parseMcqText(pdfText);
     if (localQuestions && localQuestions.length > 0) {
       const elapsed = Date.now() - t0;
-      console.log(`[PDF Parser] High-speed local extraction succeeded: ${localQuestions.length} questions parsed in ${elapsed}ms!`);
+      console.log('[PDF Parser] High-speed local extraction succeeded: %d questions parsed in %dms!', localQuestions.length, elapsed);
       return localQuestions;
     }
   }
@@ -51,11 +51,11 @@ async function parsePdfBuffer(buffer, apiKey = null) {
       }
 
       if (aiQuestions && aiQuestions.length > 0) {
-        console.log(`[PDF Parser] Gemini extraction completed: ${aiQuestions.length} questions.`);
+        console.log('[PDF Parser] Gemini extraction completed: %d questions.', aiQuestions.length);
         return aiQuestions;
       }
     } catch (err) {
-      console.warn('[PDF Parser] Gemini extraction error:', err.message);
+      console.warn('[PDF Parser] Gemini extraction error: %s', err.message);
     }
   }
 

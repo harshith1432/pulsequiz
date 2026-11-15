@@ -1,29 +1,30 @@
 # PulseQuiz ⚡
 
-A high-concurrency, real-time multiplayer interactive quiz platform featuring synchronized dual-screen presentation, mobile tactile buzzer controllers, intelligent document parsing, host authentication with quiz isolation, and automated cluster scalability.
+A high-concurrency, real-time multiplayer interactive quiz platform featuring synchronized dual-screen presentation, mobile tactile buzzer controllers, intelligent document parsing, host authentication with quiz isolation, automated cluster scalability, and enterprise-grade security defenses.
 
 ## 🌟 Key Features
 
 ### 1. Dual-Screen Real-Time Experience
-- **Host / Stage Display**: Designed for projectors, monitors, and auditorium TVs. Displays live 6-digit room PINs, animated countdown timers, live response charts, question answer distributions, round-by-round cumulative scoreboards, and the grand Olympic podium.
-- **Mobile Player Controller**: Lightweight mobile web interface with zero app install required. Features responsive 4-color choice buzzers (▲ Red, ◆ Blue, ● Yellow, ■ Green) with native haptic vibration feedback.
+- **Host / Stage Display**: Designed for projectors, monitors, and auditorium displays. Shows live 6-digit room PINs, animated countdown timers, live response charts, answer distribution statistics, round-by-round cumulative scoreboards, and an Olympic-style victory podium.
+- **Mobile Player Controller**: Lightweight mobile web interface with zero app download required. Features responsive 4-color choice buzzers (▲ Red, ◆ Blue, ● Yellow, ■ Green) with native haptic vibration feedback.
 
 ### 2. Host Authentication & Quiz Isolation
-- **Host Accounts**: Secure host registration and login powered by cryptographic password hashing and token-based authentication.
-- **Tenant Isolation**: Hosts manage their own personal quiz library with strict ownership authorization. Quizzes, rooms, and session records are securely isolated per host.
+- **Secure Host Accounts**: Registration and login backed by cryptographic password hashing (`scrypt`) and timing-safe comparison (`crypto.timingSafeEqual`) to prevent side-channel timing attacks.
+- **Tenant Isolation**: Hosts manage their own private quiz catalog with strict ownership enforcement. Quizzes, rooms, and historical game sessions are strictly isolated per host account.
 
 ### 3. Smart Question Pooling & Shuffling
-- **Question Pool Sampling**: Store large question banks (e.g., 50–100+ questions) and automatically sample a random subset (e.g., 10, 20 questions) for each game session.
-- **Repetition Prevention**: Built-in tracking of previously used questions to ensure participants do not see repeated questions across consecutive game runs until the pool is exhausted or manually reset.
+- **Question Pool Sampling**: Store extensive question banks (e.g., 50–100+ questions) and automatically sample a random subset (e.g., 10, 20 questions) for each game session.
+- **Repetition Prevention**: Built-in tracking of previously used questions ensures participants do not encounter repeat questions across consecutive game runs until the question pool is exhausted or manually reset.
 
 ### 4. Interactive Host Controls & Live Game Flow
 - **Adjustable Timers**: Dynamically update question duration before launching a game.
-- **Automatic Instant Reveal**: When all joined participants have submitted their answers, the round instantly concludes and displays answer statistics without waiting for the remaining countdown.
+- **Automatic Instant Reveal**: When all joined participants have submitted their answers, the round instantly concludes and displays answer statistics without waiting for the timer to elapse.
 - **Manual Early Reveal**: Host can manually end questions at any time.
-- **Mid-Game Final Podium**: Host can cleanly conclude an active game at any point and transition directly to the Top 10 celebration podium.
+- **Mid-Game Final Podium**: Host can conclude an active game at any point and transition directly to the Top 10 celebration podium.
 
 ### 5. Document Ingestion Pipeline
 - **Excel Spreadsheet Support**: Downloadable Excel template (`PulseQuiz_Questions_Template.xlsx`) with automated format validation and bulk import.
+- **Anti-Formula Injection**: Sanitizes spreadsheet rows to block CSV/Formula Injection attacks (CWE-1236) by stripping dangerous prefix characters (`=`, `+`, `-`, `@`, `|`, `\t`, `\r`).
 - **PDF Question Extraction**:
   - Offline heuristic regex parser for standard numbered exam papers and worksheets.
   - Multimodal Google Gemini integration for extracting structured MCQs and answer keys directly from test documents.
@@ -34,8 +35,15 @@ A high-concurrency, real-time multiplayer interactive quiz platform featuring sy
 
 ### 7. High-Concurrency & Cluster Architecture
 - **Multi-Core Clustering**: Node.js cluster orchestration (`cluster.js`) utilizing worker processes across CPU cores.
-- **Asynchronous DB Queue**: Non-blocking in-memory queue (`dbQueue.js`) buffering high-velocity player submissions to prevent database connection spikes.
+- **Asynchronous DB Queue**: Non-blocking in-memory queue (`dbQueue.js`) buffering high-velocity player submissions to prevent database connection spikes under high concurrency.
 - **Horizontal Scaling with Nginx & Redis**: Docker Compose configuration (`docker-compose.cluster.yml`) with Nginx reverse proxy load balancing and Redis adapter for distributed WebSocket broadcasting.
+
+### 8. Enterprise-Grade Security Hardening
+- **Multi-Tier Rate Limiting**: Dedicated rate limiters using `express-rate-limit` for authentication (`authLimiter`), document uploads (`uploadLimiter`), room creation (`roomCreationLimiter`), API endpoints (`generalApiLimiter`), and room PIN lookup (`pinLimiter`).
+- **Prototype Pollution Guard**: Middleware strictly inspecting request payloads to block `__proto__`, `constructor`, and `prototype` property injection vectors.
+- **Content Security Policy (CSP)**: Strict headers configured via Helmet to safeguard against cross-site scripting (XSS) and unauthorized framing.
+- **Dynamic CORS Policy**: Origin validation supporting localhost, local network subnets, and Cloudflare tunnel endpoints.
+- **Authenticated WebSockets**: Host socket events (theme updates, state transitions, question triggers) require host token validation.
 
 ---
 
@@ -53,22 +61,22 @@ pulsequiz/
 │   │   └── utils/             # Web Audio sound engine & question shuffling helpers
 │   └── package.json
 ├── server/                     # Backend Application (Node.js + Express + Socket.io)
-│   ├── middleware/            # Security headers (Helmet) & rate limiters
+│   ├── middleware/            # Security headers, rate limiters, prototype pollution guard
 │   ├── services/
 │   │   ├── dbQueue.js         # Asynchronous batching queue for PostgreSQL writes
-│   │   ├── excelService.js    # Excel template generation and parser
+│   │   ├── excelService.js    # Excel template generation and sanitized parser
 │   │   └── pdfService.js      # Heuristic and AI-driven PDF document parser
 │   ├── utils/
 │   │   └── questionShuffle.js # Smart question pool sampling and tracking
 │   ├── cluster.js             # Multi-core cluster entry point
-│   ├── db.js                  # PostgreSQL schema, user auth, and query layer
+│   ├── db.js                  # PostgreSQL schema, timing-safe auth, and query layer
 │   ├── index.js               # Express application, REST endpoints, Socket.io handlers
 │   ├── roomManager.js         # Room state machine, PIN manager, and score calculations
 │   └── scoring.js             # Speed-weighted time-decay scoring algorithm
 ├── docker-compose.cluster.yml  # Multi-node container configuration with Nginx & Redis
 ├── nginx/                     # Reverse proxy configuration for sticky WebSockets
 ├── .env.example               # Environment variables template
-├── .gitignore                 # Repository ignore rules
+├── .gitignore                 # Strict zero-secret repository ignore rules
 └── README.md
 ```
 
@@ -170,8 +178,8 @@ node test-past-winners.js
 ## 🔒 Security & Privacy
 
 - **Zero-Secret Standard**: No passwords, API keys, or database credentials are committed to version control.
-- **Password Security**: Passwords are cryptographically salted and hashed.
-- **Rate Limiting**: Protected against room PIN brute-force attempts and denial-of-service traffic.
+- **Timing-Safe Authentication**: Protected against side-channel timing attacks using `crypto.timingSafeEqual`.
+- **Granular Rate Limiting**: Protected against room PIN brute-force attempts, credential stuffing, and denial-of-service traffic.
 - **Input Sanitization**: Multi-layer validation on all user submissions, document uploads, and socket events.
 
 ---

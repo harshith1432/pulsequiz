@@ -8,7 +8,7 @@ const pool = new Pool({
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected error on idle PostgreSQL client:', err);
+  console.error('Unexpected error on idle PostgreSQL client: %s', err ? (err.message || String(err)) : 'unknown');
 });
 
 // In-memory fallback caches
@@ -95,18 +95,19 @@ async function initDb() {
 
     // Ensure user_id, question_pool, used_question_ids, default_sample_count columns exist on quizzes
     try {
+      await client.query("SET lock_timeout = '2s'");
       await client.query('ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS user_id UUID');
       await client.query('ALTER TABLE rooms ADD COLUMN IF NOT EXISTS user_id UUID');
       await client.query('ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS question_pool JSONB DEFAULT \'[]\'::jsonb');
       await client.query('ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS used_question_ids JSONB DEFAULT \'[]\'::jsonb');
       await client.query('ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS default_sample_count INT DEFAULT 20');
     } catch {
-      // Ignore if columns already present
+      // Ignore if columns already present or lock timed out
     }
 
     console.log('PostgreSQL schema initialized successfully with user isolation.');
   } catch (err) {
-    console.error('Error initializing PostgreSQL schema:', err.message);
+    console.error('Error initializing PostgreSQL schema: %s', err.message);
   } finally {
     client.release();
   }
@@ -119,8 +120,8 @@ async function createUser(username, password) {
   if (cleanUsername.length < 3) {
     throw new Error('Username must be at least 3 characters.');
   }
-  if (!password || password.length < 4) {
-    throw new Error('Password must be at least 4 characters.');
+  if (!password || typeof password !== 'string' || password.length < 8) {
+    throw new Error('Password must be at least 8 characters.');
   }
 
   const salt = crypto.randomBytes(16).toString('hex');
@@ -137,7 +138,7 @@ async function createUser(username, password) {
     if (err.code === '23505') {
       throw new Error('Username is already registered. Please choose another or sign in.');
     }
-    console.error('PostgreSQL user creation fallback:', err.message);
+    console.error('PostgreSQL user creation fallback: %s', err.message);
   }
 
   inMemoryUsers.set(cleanUsername, { id: userId, username: cleanUsername, passwordHash });
@@ -146,7 +147,7 @@ async function createUser(username, password) {
 
 async function authenticateUser(username, password) {
   const cleanUsername = (username || '').trim().toLowerCase();
-  if (!cleanUsername || !password) {
+  if (!cleanUsername || !password || typeof password !== 'string') {
     throw new Error('Username and password are required.');
   }
 
@@ -160,20 +161,25 @@ async function authenticateUser(username, password) {
       user = res.rows[0];
     }
   } catch (err) {
-    console.error('Database query in authenticateUser:', err.message);
+    console.error('Database query in authenticateUser: %s', err.message);
   }
 
   if (!user) {
     user = inMemoryUsers.get(cleanUsername);
   }
 
-  if (!user) {
+  if (!user || !user.passwordHash) {
     throw new Error('Invalid username or password.');
   }
 
   const [salt, storedHash] = user.passwordHash.split(':');
+  if (!salt || !storedHash) {
+    throw new Error('Invalid username or password.');
+  }
   const computedHash = crypto.scryptSync(password, salt, 64).toString('hex');
-  if (computedHash !== storedHash) {
+  const bufComputed = Buffer.from(computedHash, 'utf8');
+  const bufStored = Buffer.from(storedHash, 'utf8');
+  if (bufComputed.length !== bufStored.length || !crypto.timingSafeEqual(bufComputed, bufStored)) {
     throw new Error('Invalid username or password.');
   }
 
@@ -187,7 +193,7 @@ async function getUserById(userId) {
       return res.rows[0];
     }
   } catch (err) {
-    console.error('Database query in getUserById:', err.message);
+    console.error('Database query in getUserById: %s', err.message);
   }
 
   for (const u of inMemoryUsers.values()) {
@@ -294,7 +300,7 @@ async function persistQuiz(quizId, title, questions, userId = null, questionPool
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error persisting quiz to PostgreSQL:', err.message);
+    console.error('Error persisting quiz to PostgreSQL: %s', err.message);
   } finally {
     client.release();
   }
@@ -328,7 +334,7 @@ async function updateQuizUsedQuestions(quizId, usedQuestionIds, userId = null) {
     }
     await pool.query(query, params);
   } catch (err) {
-    console.error('Error updating quiz used questions in PostgreSQL:', err.message);
+    console.error('Error updating quiz used questions in PostgreSQL: %s', err.message);
   }
   const cached = inMemoryQuizzes.get(quizId);
   if (cached) {
@@ -424,7 +430,7 @@ async function getSavedQuizzes(userId = null) {
 
     return quizzes;
   } catch (err) {
-    console.error('Error fetching saved quizzes from PostgreSQL:', err.message);
+    console.error('Error fetching saved quizzes from PostgreSQL: %s', err.message);
     const inMem = Array.from(inMemoryQuizzes.values());
     if (userId) {
       return inMem.filter(q => q.userId === userId);
@@ -504,7 +510,7 @@ async function getQuizById(quizId, userId = null) {
       defaultSampleCount: qRow.defaultSampleCount || 20
     };
   } catch (err) {
-    console.error('Error fetching quiz by ID:', err.message);
+    console.error('Error fetching quiz by ID: %s', err.message);
     const cached = inMemoryQuizzes.get(quizId);
     if (cached && (!userId || cached.userId === userId)) return cached;
     return null;
@@ -522,7 +528,7 @@ async function deleteQuiz(quizId, userId = null) {
       await pool.query('DELETE FROM quizzes WHERE id = $1', [quizId]);
     }
   } catch (err) {
-    console.error('Error deleting quiz from PostgreSQL:', err.message);
+    console.error('Error deleting quiz from PostgreSQL: %s', err.message);
   }
   const cached = inMemoryQuizzes.get(quizId);
   if (cached && (!userId || cached.userId === userId)) {
@@ -540,7 +546,7 @@ async function persistRoom(pin, hostToken, quizId, title, userId = null) {
       [pin, hostToken, quizId, title, userId]
     );
   } catch (err) {
-    console.error('Error persisting room to PostgreSQL:', err.message);
+    console.error('Error persisting room to PostgreSQL: %s', err.message);
   }
 }
 
@@ -563,7 +569,7 @@ async function persistPlayer(pin, player) {
       [player.id, pin, player.nickname, player.score, player.streak]
     );
   } catch (err) {
-    console.error('Error persisting player to PostgreSQL:', err.message);
+    console.error('Error persisting player to PostgreSQL: %s', err.message);
   }
 }
 
@@ -590,7 +596,7 @@ async function persistAnswer(pin, playerId, answer) {
       [answer.pointsAwarded, answer.isCorrect ? 1 : 0, playerId]
     );
   } catch (err) {
-    console.error('Error persisting answer to PostgreSQL:', err.message);
+    console.error('Error persisting answer to PostgreSQL: %s', err.message);
   }
 }
 
@@ -646,20 +652,25 @@ async function finishRoom(pin, podium = []) {
       }
     }
   } catch (err) {
-    console.error('Error finishing room & recording winners in PostgreSQL:', err.message);
+    console.error('Error finishing room & recording winners in PostgreSQL: %s', err.message);
   }
 }
 
 async function getQuizPastWinners(quizId, userId = null) {
   try {
-    const res = await pool.query(
-      `SELECT id, quiz_id as "quizId", room_pin as "roomPin", title,
+    let query = `SELECT id, quiz_id as "quizId", room_pin as "roomPin", title,
               user_id as "userId", winners, total_players as "totalPlayers", played_at as "playedAt"
        FROM quiz_sessions
-       WHERE quiz_id = $1
-       ORDER BY played_at DESC`,
-      [quizId]
-    );
+       WHERE quiz_id = $1`;
+    const params = [quizId];
+
+    if (userId) {
+      query += ` AND user_id = $2`;
+      params.push(userId);
+    }
+    query += ` ORDER BY played_at DESC`;
+
+    const res = await pool.query(query, params);
 
     return res.rows.map(row => ({
       id: row.id,
@@ -672,8 +683,12 @@ async function getQuizPastWinners(quizId, userId = null) {
       playedAt: row.playedAt
     }));
   } catch (err) {
-    console.error('Error fetching past winners from PostgreSQL:', err.message);
-    return inMemoryQuizSessions.get(quizId) || [];
+    console.error('Error fetching past winners from PostgreSQL: %s', err.message);
+    const list = inMemoryQuizSessions.get(quizId) || [];
+    if (userId) {
+      return list.filter(s => s.userId === userId);
+    }
+    return list;
   }
 }
 
