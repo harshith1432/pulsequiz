@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Custom animated pulse glow */
+.glow-red {
+  box-shadow: 0 0 25px rgba(239, 68, 68, 0.4);
+}
+.glow-blue {
+  box-shadow: 0 0 25px rgba(59, 130, 246, 0.4);
+}
+.glow-yellow {
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.4);
+}
+.glow-green {
+  box-shadow: 0 0 25px rgba(16, 185, 129, 0.4);
+}
+
+/* Smooth custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0B0F19;
+}
+::-webkit-scrollbar-thumb {
+  background: #232E48;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}
